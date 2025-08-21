@@ -1,0 +1,27 @@
+# Node.js
+node_modules/
+npm-debug.log*
+.eslintcache
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+/uploads
+calmail-stt.json
+
+# Logs
+logs/
+*.log
+
+# Build artifacts
+dist/
+build/
+
+# IDE and OS specific files
+.DS_Store
+.vscode/
+.idea/

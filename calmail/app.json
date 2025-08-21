@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "CalMail",
+    "slug": "calmail",
+    "version": "1.0.0",
+    "schema": "calmail",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "calmail",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.calmail.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.calmail.app"
+    },
+    "web": {
+      "bundler": "metro",
+      "outputDir": "dist",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-web-browser"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
