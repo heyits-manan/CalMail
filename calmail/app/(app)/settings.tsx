@@ -1,7 +1,7 @@
 import { SignedIn, SignedOut, useUser } from "@clerk/clerk-expo";
 import { Link } from "expo-router";
 import { Text, TouchableOpacity, View } from "react-native";
-import { SignOutButton } from "../components/SignOutButton";
+import { SignOutButton } from "../_shared/SignOutButton";
 
 export default function Settings() {
   const { user } = useUser();
@@ -27,7 +27,7 @@ export default function Settings() {
               </Text>
             </View>
 
-            <Link href="../settings/accounts" asChild>
+            <Link href="/settings/accounts" asChild>
               <TouchableOpacity className="bg-gray-50 p-4 rounded-xl">
                 <Text className="text-lg font-semibold text-gray-900">
                   Connected Accounts

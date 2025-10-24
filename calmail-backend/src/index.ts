@@ -71,6 +71,7 @@ app.get("/auth/google/url", requireAuth(), (req, res) => {
     access_type: "offline",
     scope: scopes,
     state: state, // Pass the state to Google
+    prompt: "consent", // Ensure a refresh token is always returned
   });
 
   res.json({ authUrl: url });
@@ -100,32 +101,32 @@ app.get("/auth/google/callback", async (req, res) => {
       throw new Error("Failed to retrieve access token from Google.");
     }
 
-    const valuesToSet: {
-      accessToken: string;
-      scopes: string | null | undefined;
-      refreshToken?: string;
-    } = {
-      accessToken: encrypt(tokens.access_token),
+    const encryptedAccessToken = encrypt(tokens.access_token);
+    const insertValues: typeof accounts.$inferInsert = {
+      clerkUserId: userId,
+      provider: "google",
+      accessToken: encryptedAccessToken,
+      scopes: tokens.scope,
+    };
+
+    const updateValues: Partial<typeof accounts.$inferInsert> = {
+      accessToken: encryptedAccessToken,
       scopes: tokens.scope,
     };
 
     if (tokens.refresh_token) {
       console.log("Received a new refresh token, updating in DB.");
-      valuesToSet.refreshToken = encrypt(tokens.refresh_token);
+      const encryptedRefreshToken = encrypt(tokens.refresh_token);
+      insertValues.refreshToken = encryptedRefreshToken;
+      updateValues.refreshToken = encryptedRefreshToken;
     }
 
     await db
       .insert(accounts)
-      .values({
-        clerkUserId: userId,
-        provider: "google",
-        accessToken: valuesToSet.accessToken,
-        refreshToken: valuesToSet.refreshToken,
-        scopes: valuesToSet.scopes,
-      })
+      .values(insertValues)
       .onConflictDoUpdate({
         target: accounts.clerkUserId,
-        set: valuesToSet,
+        set: updateValues,
       });
 
     console.log("Successfully saved tokens for user:", userId);
@@ -162,7 +163,7 @@ app.get("/me", requireAuth(), async (req, res) => {
 
     // 3. Decrypt the tokens
     const accessToken = decrypt(account.accessToken);
-    const refreshToken = account.refreshToken
+    let refreshToken = account.refreshToken
       ? decrypt(account.refreshToken)
       : undefined;
 
@@ -174,16 +175,116 @@ app.get("/me", requireAuth(), async (req, res) => {
 
     // 5. Make an authenticated API call to Google
     const gmail = google.gmail({ version: "v1", auth: oAuth2Client });
-    const profile = await gmail.users.getProfile({
-      userId: "me",
-    });
 
-    res.json(profile.data);
+    try {
+      const profile = await gmail.users.getProfile({
+        userId: "me",
+      });
+
+      res.json(profile.data);
+    } catch (err) {
+      if (isUnauthorizedError(err)) {
+        if (!refreshToken) {
+          console.error(
+            `No refresh token available for user ${userId}; cannot recover from expired Google access token.`
+          );
+          return res.status(401).json({
+            error:
+              "Google access expired and no refresh token is available. Please reconnect your Google account.",
+          });
+        }
+
+        try {
+          const refreshedTokens = await refreshGoogleTokens(userId, refreshToken);
+          refreshToken = refreshedTokens.refreshToken;
+          const refreshedGmail = google.gmail({
+            version: "v1",
+            auth: oAuth2Client,
+          });
+          const profile = await refreshedGmail.users.getProfile({
+            userId: "me",
+          });
+
+          return res.json(profile.data);
+        } catch (refreshError) {
+          console.error(
+            "Failed to refresh Google access token during /me request:",
+            refreshError
+          );
+          return res.status(401).json({
+            error:
+              "Google authentication expired. Please reconnect your Google account.",
+          });
+        }
+      }
+
+      throw err;
+    }
   } catch (error) {
     console.error("Failed to fetch Google profile:", error);
     res.status(500).json({ error: "Failed to fetch Google profile" });
   }
 });
+
+function isUnauthorizedError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const maybeError = error as {
+    code?: number | string;
+    status?: number;
+    statusCode?: number;
+    response?: { status?: number };
+  };
+
+  const statusCandidates = [
+    maybeError.code,
+    maybeError.status,
+    maybeError.statusCode,
+    maybeError.response?.status,
+  ];
+
+  return statusCandidates.some((status) => Number(status) === 401);
+}
+
+async function refreshGoogleTokens(
+  userId: string,
+  refreshToken: string
+): Promise<{ accessToken: string; refreshToken: string }> {
+  oAuth2Client.setCredentials({ refresh_token: refreshToken });
+  const response = await oAuth2Client.refreshAccessToken();
+  const { access_token, refresh_token, scope } = response.credentials;
+
+  if (!access_token) {
+    throw new Error("Failed to refresh Google access token.");
+  }
+
+  const updatePayload: Partial<typeof accounts.$inferInsert> = {
+    accessToken: encrypt(access_token),
+    scopes: scope,
+  };
+
+  const latestRefreshToken = refresh_token ?? refreshToken;
+  if (refresh_token) {
+    updatePayload.refreshToken = encrypt(refresh_token);
+  }
+
+  await db
+    .update(accounts)
+    .set(updatePayload)
+    .where(eq(accounts.clerkUserId, userId));
+
+  oAuth2Client.setCredentials({
+    access_token: access_token,
+    refresh_token: latestRefreshToken,
+  });
+
+  return {
+    accessToken: access_token,
+    refreshToken: latestRefreshToken,
+  };
+}
 
 app.post(
   "/api/webhooks/clerk",

@@ -3,6 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Link, useRouter } from "expo-router";
 import * as React from "react";
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -159,14 +160,14 @@ export default function SignUpScreen() {
                 }`}
               >
                 <View className="flex-row items-center justify-center space-x-2">
-                  {isLoading ? (
-                    <View className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <Ionicons
-                      name="checkmark-circle-outline"
-                      size={20}
-                      color="white"
-                    />
+                {isLoading ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <Ionicons
+                    name="checkmark-circle-outline"
+                    size={20}
+                    color="white"
+                  />
                   )}
                   <Text className="text-white text-center font-bold text-lg">
                     {isLoading ? "Verifying..." : "Verify Email"}
@@ -176,7 +177,7 @@ export default function SignUpScreen() {
 
               <View className="text-center">
                 <Text className="text-gray-500 text-sm">
-                  Didn't receive the code? Check your spam folder or
+                  Didn&apos;t receive the code? Check your spam folder or
                 </Text>
                 <TouchableOpacity className="mt-2">
                   <Text className="text-green-600 font-semibold text-sm">
@@ -295,7 +296,7 @@ export default function SignUpScreen() {
             >
               <View className="flex-row items-center justify-center space-x-2">
                 {isLoading ? (
-                  <View className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <ActivityIndicator size="small" color="#ffffff" />
                 ) : (
                   <Ionicons name="person-add-outline" size={20} color="white" />
                 )}

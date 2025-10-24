@@ -3,6 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Link, useRouter } from "expo-router";
 import React from "react";
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -163,7 +164,7 @@ export default function Page() {
             >
               <View className="flex-row items-center justify-center space-x-2">
                 {isLoading ? (
-                  <View className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <ActivityIndicator size="small" color="#ffffff" />
                 ) : (
                   <Ionicons name="log-in-outline" size={20} color="white" />
                 )}
@@ -176,7 +177,7 @@ export default function Page() {
             {/* Sign Up Link */}
             <View className="flex-row justify-center space-x-1 pt-4">
               <Text className="text-gray-600 text-base">
-                Don't have an account?
+                Don&apos;t have an account?
               </Text>
               <Link
                 href="../sign-up"
