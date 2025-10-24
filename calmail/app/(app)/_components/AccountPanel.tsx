@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { View, Text, TouchableOpacity } from "react-native";
+import { View, Text, TouchableOpacity, ActivityIndicator } from "react-native";
 
 interface AccountPanelProps {
   googleAccount: any;
@@ -20,12 +20,14 @@ export function AccountPanel({
   onRefresh,
   onDisconnect,
 }: AccountPanelProps) {
-  if (isChecking) {
+  const showCheckingState = isChecking && !googleAccount;
+
+  if (showCheckingState) {
     return (
       <View className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm mt-4">
         <View className="flex-row items-center space-x-3">
           <View className="w-10 h-10 rounded-full bg-gray-100 items-center justify-center">
-            <View className="w-4 h-4 border-2 border-gray-300 border-t-transparent rounded-full" />
+            <ActivityIndicator size="small" color="#6b7280" />
           </View>
           <View>
             <Text className="text-sm font-semibold text-gray-700">
@@ -64,21 +66,30 @@ export function AccountPanel({
               <Text className="text-xs text-green-600 mt-1">{email}</Text>
             </View>
           </View>
-          <TouchableOpacity
-            onPress={onRefresh}
-            disabled={isDisconnecting}
-            className={`px-3 py-2 rounded-lg border ${
-              isDisconnecting ? "border-gray-200" : "border-green-300"
-            }`}
-          >
-            <Text
-              className={`text-xs font-semibold ${
-                isDisconnecting ? "text-gray-400" : "text-green-700"
+          {isChecking ? (
+            <View className="flex-row items-center">
+              <ActivityIndicator size="small" color="#047857" />
+              <Text className="ml-2 text-xs font-medium text-green-700">
+                Refreshing…
+              </Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              onPress={onRefresh}
+              disabled={isDisconnecting}
+              className={`px-3 py-2 rounded-lg border ${
+                isDisconnecting ? "border-gray-200" : "border-green-300"
               }`}
             >
-              Refresh
-            </Text>
-          </TouchableOpacity>
+              <Text
+                className={`text-xs font-semibold ${
+                  isDisconnecting ? "text-gray-400" : "text-green-700"
+                }`}
+              >
+                Refresh
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <TouchableOpacity

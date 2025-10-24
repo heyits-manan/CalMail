@@ -3,7 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Linking from "expo-linking";
 import { useFocusEffect, useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, ScrollView, Text, TouchableOpacity, View } from "react-native";
 
 import { AccountPanel } from "../(app)/_components/AccountPanel";
@@ -22,6 +22,7 @@ type GoogleAccountProfile = {
 export default function ConnectedAccounts() {
   const router = useRouter();
   const { getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
   const [googleAccount, setGoogleAccount] =
     useState<GoogleAccountProfile | null>(null);
   const [isChecking, setIsChecking] = useState(true);
@@ -39,11 +40,15 @@ export default function ConnectedAccounts() {
     }
   }, [router]);
 
+  useEffect(() => {
+    getTokenRef.current = getToken;
+  }, [getToken]);
+
   const fetchGoogleStatus = useCallback(async () => {
     setIsChecking(true);
     setErrorMessage(null);
 
-    const token = await getToken();
+    const token = await getTokenRef.current();
     if (!token) {
       setGoogleAccount(null);
       setIsChecking(false);
@@ -121,7 +126,7 @@ export default function ConnectedAccounts() {
     } finally {
       setIsChecking(false);
     }
-  }, [baseUrl, getToken]);
+  }, [baseUrl]);
 
   useFocusEffect(
     useCallback(() => {
@@ -135,7 +140,8 @@ export default function ConnectedAccounts() {
       return;
     }
 
-    const token = await getToken();
+    const tokenGetter = getTokenRef.current;
+    const token = tokenGetter ? await tokenGetter() : null;
     if (!token) {
       Alert.alert("Error", "You must be signed in to connect Google.");
       return;
@@ -197,7 +203,7 @@ export default function ConnectedAccounts() {
       setIsConnecting(false);
       await fetchGoogleStatus();
     }
-  }, [baseUrl, fetchGoogleStatus, getToken, isConnecting]);
+  }, [baseUrl, fetchGoogleStatus, isConnecting]);
 
   const handleDisconnect = useCallback(() => {
     if (isDisconnecting) {
@@ -221,7 +227,8 @@ export default function ConnectedAccounts() {
           text: "Disconnect",
           style: "destructive",
           onPress: async () => {
-            const token = await getToken();
+            const tokenGetter = getTokenRef.current;
+            const token = tokenGetter ? await tokenGetter() : null;
             if (!token) {
               Alert.alert(
                 "Error",
@@ -281,7 +288,7 @@ export default function ConnectedAccounts() {
         },
       ]
     );
-  }, [baseUrl, fetchGoogleStatus, getToken, isDisconnecting]);
+  }, [baseUrl, fetchGoogleStatus, isDisconnecting]);
 
   return (
     <View className="flex-1 bg-white">
