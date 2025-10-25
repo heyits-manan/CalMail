@@ -441,6 +441,10 @@ app.post(
             );
             executionResult = await handleSendEmail(userId, nluResult.entities);
             break;
+          case "fetch_email":
+            console.log("Fetching recent emails with entities:", nluResult.entities);
+            executionResult = await handleFetchEmails(userId, nluResult.entities);
+            break;
           case "create_event":
             // TODO: Implement create_event handler
             executionResult = {
@@ -550,7 +554,7 @@ async function processCommand(transcript: string) {
   const prompt = `
     You are an expert NLU model specialized in understanding voice commands for email and calendar management. Your job is to analyze the user's command and return a structured JSON object with two top-level keys: "intent" and "entities". The "entities" key must always be an object, even if it's empty.
 
-    The possible intents are: "send_email", "create_event".
+    The possible intents are: "send_email", "create_event", "fetch_email".
 
     - For the "send_email" intent, the "entities" object must contain "recipient", "body", and "subject".
       - The "recipient" can be a name (like "manan", "john") or an email address (like "manan@gmail.com")
@@ -561,6 +565,10 @@ async function processCommand(transcript: string) {
         * Keep subjects under 50 characters when possible
         * Make subjects descriptive and actionable
     - For the "create_event" intent, the "entities" object must contain "title", "date", and "time".
+    - For the "fetch_email" intent, the "entities" object MAY contain:
+        * "sender" — the person the emails should come from (name or email). Only include if mentioned.
+        * "count" — number of emails to read back (default to 5 if not specified). Use a number, not a string.
+      If the user asks for "latest emails" without a sender, omit the "sender" key entirely. Always include only the keys you are confident about.
 
     IMPORTANT: When processing email addresses from speech recognition, pay special attention to the word "at" when it appears between a name and email domains like gmail, yahoo, hotmail, outlook, etc. In these cases, "at" should be interpreted as the @ symbol.
 
@@ -588,6 +596,8 @@ async function processCommand(transcript: string) {
     - "gmail" = "google mail" = "googlemail"
     - "yahoo" = "yahoo mail"
     - "hotmail" = "outlook.com" (Microsoft accounts)
+    - "show me emails" = "fetch my emails" = "read my inbox" = Intent "fetch_email"
+    - "any mail from" = "emails from" = "messages from" = Intent "fetch_email" with a sender entity
 
     CONTEXT AWARENESS:
     - If the user says "send a mail to my boss" and no specific name/email is mentioned, extract "my boss" as the recipient
@@ -704,6 +714,25 @@ async function processCommand(transcript: string) {
         "recipient": "john",
         "body": "can you please send me the project files",
         "subject": "Project files request"
+      }
+    }
+
+    User command: "read my latest 3 emails"
+    Your JSON output:
+    {
+      "intent": "fetch_email",
+      "entities": {
+        "count": 3
+      }
+    }
+
+    User command: "show the newest emails from Sarah"
+    Your JSON output:
+    {
+      "intent": "fetch_email",
+      "entities": {
+        "sender": "Sarah",
+        "count": 5
       }
     }
 
@@ -1166,6 +1195,252 @@ async function handleSendEmail(
   };
 }
 
+interface EmailSummary {
+  id: string;
+  subject: string;
+  from: string;
+  snippet: string;
+  date: string;
+}
+
+function clampEmailCount(value: unknown, fallback = 5) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.min(Math.max(Math.trunc(value), 1), 10);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isNaN(parsed)) {
+      return Math.min(Math.max(parsed, 1), 10);
+    }
+  }
+  return fallback;
+}
+
+function normalizeSenderEntity(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed;
+}
+
+function getHeaderValue(headers: any[] | undefined, name: string) {
+  if (!headers) return undefined;
+  const header = headers.find(
+    (item) => item.name?.toLowerCase() === name.toLowerCase()
+  );
+  return header?.value ?? undefined;
+}
+
+function sanitizeSnippet(snippet: string | undefined, maxLength = 160) {
+  if (!snippet) return "";
+  const cleaned = snippet.replace(/\s+/g, " ").trim();
+  if (cleaned.length <= maxLength) return cleaned;
+  return `${cleaned.slice(0, maxLength - 1)}…`;
+}
+
+function formatDateToISO({
+  internalDate,
+  headerDate,
+}: {
+  internalDate?: string | null;
+  headerDate?: string;
+}) {
+  if (internalDate) {
+    const millis = Number(internalDate);
+    if (!Number.isNaN(millis)) {
+      return new Date(millis).toISOString();
+    }
+  }
+
+  if (headerDate) {
+    const parsed = new Date(headerDate);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  return new Date().toISOString();
+}
+
+function buildEmailsSpeechSummary(
+  emails: EmailSummary[],
+  options: { sender?: string; count: number }
+) {
+  const { sender, count } = options;
+  if (!emails.length) {
+    if (sender) {
+      return `I could not find any recent emails from ${sender}.`;
+    }
+    return "I could not find any recent emails.";
+  }
+
+  const intro = sender
+    ? `Here are the latest ${emails.length} emails from ${sender}.`
+    : `Here are your latest ${emails.length} emails.`;
+
+  const details = emails
+    .slice(0, Math.min(emails.length, 3))
+    .map((email, index) => {
+      const receivedDate = new Date(email.date);
+      const dateLabel = Number.isNaN(receivedDate.getTime())
+        ? "recently"
+        : `on ${receivedDate.toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+          })}`;
+      const snippet = email.snippet ? ` ${email.snippet}` : "";
+      return `${index + 1}. From ${email.from} — subject ${email.subject} ${dateLabel}.${snippet}`;
+    })
+    .join(" ");
+
+  const tail = emails.length > count
+    ? ` Showing the first ${count} emails requested.`
+    : "";
+
+  return `${intro} ${details}${tail}`.trim();
+}
+
+async function handleFetchEmails(
+  userId: string,
+  entities: { sender?: string; count?: number | string }
+) {
+  const userAccounts = await db
+    .select()
+    .from(accounts)
+    .where(eq(accounts.clerkUserId, userId));
+  if (userAccounts.length === 0) {
+    throw new Error("Google account not connected.");
+  }
+
+  const account = userAccounts[0];
+  const accessToken = decrypt(account.accessToken);
+  let refreshToken = account.refreshToken
+    ? decrypt(account.refreshToken)
+    : undefined;
+
+  const maxResults = clampEmailCount(entities?.count);
+  const sender = normalizeSenderEntity(entities?.sender);
+  const quotedSender = sender && sender.includes(" ") ? `"${sender}"` : sender;
+  const query = quotedSender ? `from:${quotedSender}` : undefined;
+
+  oAuth2Client.setCredentials({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+
+  const loadEmails = async () => {
+    const gmailClient = google.gmail({ version: "v1", auth: oAuth2Client });
+    const listResponse = await gmailClient.users.messages.list({
+      userId: "me",
+      q: query,
+      maxResults,
+    });
+
+    const messageEntries = listResponse.data.messages ?? [];
+    if (!messageEntries.length) {
+      return [] as EmailSummary[];
+    }
+
+    const emailSummaries: EmailSummary[] = [];
+
+    for (const message of messageEntries) {
+      try {
+        const detail = await gmailClient.users.messages.get({
+          userId: "me",
+          id: message.id!,
+          format: "metadata",
+          metadataHeaders: ["Subject", "From", "Date"],
+        });
+
+        const headers = detail.data.payload?.headers;
+        const subject = getHeaderValue(headers, "Subject") || "(No subject)";
+        const from = getHeaderValue(headers, "From") || "Unknown sender";
+        const date = formatDateToISO({
+          internalDate: detail.data.internalDate,
+          headerDate: getHeaderValue(headers, "Date"),
+        });
+
+        emailSummaries.push({
+          id: detail.data.id || message.id || crypto.randomUUID(),
+          subject,
+          from,
+          snippet: sanitizeSnippet(detail.data.snippet ?? undefined),
+          date,
+        });
+      } catch (detailError) {
+        console.warn("Failed to load Gmail message:", detailError);
+      }
+    }
+
+    return emailSummaries;
+  };
+
+  try {
+    const emails = await loadEmails();
+    const speechSummary = buildEmailsSpeechSummary(emails, {
+      sender,
+      count: maxResults,
+    });
+
+    const message = emails.length
+      ? `Fetched ${emails.length} recent email${emails.length > 1 ? "s" : ""}${
+          sender ? ` from ${sender}` : ""
+        }.`
+      : sender
+        ? `No recent emails found from ${sender}.`
+        : "No recent emails found.";
+
+    return {
+      success: true,
+      emails,
+      message,
+      speechSummary,
+      query: {
+        sender: sender ?? null,
+        count: maxResults,
+      },
+    };
+  } catch (error) {
+    if (isUnauthorizedError(error)) {
+      if (!refreshToken) {
+        throw new Error(
+          "Google access expired and no refresh token is available. Please reconnect your Google account."
+        );
+      }
+
+      const refreshed = await refreshGoogleTokens(userId, refreshToken!);
+      refreshToken = refreshed.refreshToken;
+
+      const emails = await loadEmails();
+      const speechSummary = buildEmailsSpeechSummary(emails, {
+        sender,
+        count: maxResults,
+      });
+
+      const message = emails.length
+        ? `Fetched ${emails.length} recent email${emails.length > 1 ? "s" : ""}${
+            sender ? ` from ${sender}` : ""
+          }.`
+        : sender
+          ? `No recent emails found from ${sender}.`
+          : "No recent emails found.";
+
+      return {
+        success: true,
+        emails,
+        message,
+        speechSummary,
+        query: {
+          sender: sender ?? null,
+          count: maxResults,
+        },
+      };
+    }
+
+    throw error;
+  }
+}
+
 // Create the new command endpoint
 app.post("/command", requireAuth(), async (req, res) => {
   const { intent, entities } = req.body;
@@ -1182,6 +1457,9 @@ app.post("/command", requireAuth(), async (req, res) => {
     switch (intent) {
       case "send_email":
         result = await handleSendEmail(userId, entities);
+        break;
+      case "fetch_email":
+        result = await handleFetchEmails(userId, entities);
         break;
       // You can add more cases here for other intents like 'create_event'
       default:

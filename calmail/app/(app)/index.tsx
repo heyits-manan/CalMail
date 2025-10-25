@@ -1,16 +1,17 @@
-import { SignedIn, SignedOut, useAuth, useUser } from "@clerk/clerk-expo";
+import { SignedIn, SignedOut, useAuth } from "@clerk/clerk-expo";
 import { Audio } from "expo-av";
 import { Link } from "expo-router";
-import * as WebBrowser from "expo-web-browser";
-import { useEffect, useState } from "react";
+import * as Speech from "expo-speech";
+import { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Platform,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-  AppState,
 } from "react-native";
 import "../global.css";
 
@@ -20,8 +21,7 @@ import {
 } from "expo-file-system/legacy";
 import { CommandCard } from "./_components/CommandCard";
 import { RecordButton } from "./_components/RecordButton";
-import { AccountPanel } from "./_components/AccountPanel";
-import { CommandHistoryItem, VoiceState } from "./_types";
+import { CommandHistoryItem, EmailSummary, VoiceState } from "./_types";
 
 type ActiveCommandStatus =
   | "pending"
@@ -41,8 +41,26 @@ type ActiveCommand = {
   source: "voice" | "text";
   nluPayload?: any;
   metaMessage?: string;
+  emails?: EmailSummary[];
+  speechSummary?: string;
   timestamp: number;
 };
+
+/*
+ * AUDIO MODE LIFECYCLE:
+ *
+ * 1. RECORDING MODE (startRecording):
+ *    - iOS: Uses PlayAndRecord category (allows mic capture)
+ *    - Android: Recording enabled, speaker output
+ *    - Audio may be quiet during this phase
+ *
+ * 2. PLAYBACK MODE (before TTS speech):
+ *    - iOS: Switches to Playback category (routes to LOUDSPEAKER)
+ *    - Android: Uses main speaker (NOT earpiece)
+ *    - TTS audio plays loud and clear
+ *
+ * 3. This prevents the "phone call" sound issue where audio routes to earpiece
+ */
 
 const VOICE_STATE_UI: Record<
   VoiceState,
@@ -78,7 +96,6 @@ const VOICE_STATE_UI: Record<
 };
 
 export default function Index() {
-  const { user } = useUser();
   const { getToken } = useAuth();
 
   const [listening, setListening] = useState(false);
@@ -91,11 +108,9 @@ export default function Index() {
   const [transcript, setTranscript] = useState("");
   const [nluResult, setNluResult] = useState<any>(null);
   const [lastUploadResponse, setLastUploadResponse] = useState<any>(null);
+  const spokenCommandIdRef = useRef<string | null>(null);
   const [currentCommand, setCurrentCommand] = useState<ActiveCommand | null>(
     null
-  );
-  const [commandHistory, setCommandHistory] = useState<CommandHistoryItem[]>(
-    []
   );
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -130,23 +145,46 @@ export default function Index() {
     setVoiceState("idle");
   }, [currentCommand, errorMessage, isLoading, listening]);
 
-  const MAX_HISTORY = 10;
+  useEffect(() => {
+    return () => {
+      Speech.stop();
+    };
+  }, []);
 
-  function addHistoryEntry(entry: CommandHistoryItem) {
-    setCommandHistory((prev) => {
-      const filtered = prev.filter((item) => item.id !== entry.id);
-      return [entry, ...filtered].slice(0, MAX_HISTORY);
-    });
-  }
+  useEffect(() => {
+    if (!currentCommand) {
+      spokenCommandIdRef.current = null;
+    }
+  }, [currentCommand]);
 
-  function updateHistoryEntry(
-    id: string,
-    updater: (item: CommandHistoryItem) => CommandHistoryItem
-  ) {
-    setCommandHistory((prev) =>
-      prev.map((item) => (item.id === id ? updater(item) : item))
-    );
-  }
+  useEffect(() => {
+    if (!currentCommand?.speechSummary) return;
+    if (!["sent", "done"].includes(currentCommand.status)) return;
+    if (spokenCommandIdRef.current === currentCommand.id) return;
+    if (Platform.OS === "web") return;
+
+    const speakWithLoudspeaker = async () => {
+      try {
+        // PLAYBACK MODE: Switch from recording to playback session
+        // This routes audio to the LOUDSPEAKER instead of earpiece
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false, // iOS: Switch to Playback category (not PlayAndRecord)
+          playsInSilentModeIOS: true, // iOS: Play even in silent mode
+          staysActiveInBackground: false,
+          shouldDuckAndroid: true, // Android: Lower other audio
+          playThroughEarpieceAndroid: false, // Android: Use SPEAKER, not earpiece
+        });
+
+        Speech.stop();
+        Speech.speak(currentCommand.speechSummary, { rate: 0.95 });
+        spokenCommandIdRef.current = currentCommand.id;
+      } catch (err) {
+        console.warn("Speech playback failed", err);
+      }
+    };
+
+    speakWithLoudspeaker();
+  }, [currentCommand]);
 
   // Check Google account connection status using the /me endpoint
   // PHASE 1: UNDERSTAND (for text)
@@ -154,18 +192,17 @@ export default function Index() {
     const trimmed = inputText.trim();
     if (!trimmed) return;
 
+    Speech.stop();
+    spokenCommandIdRef.current = null;
+
     setIsLoading(true);
+    let skipFinally = false;
     setTranscript("");
     setErrorMessage(null);
     setNluResult(null);
     setLastUploadResponse(null);
 
     if (currentCommand && currentCommand.status === "needs_confirm") {
-      updateHistoryEntry(currentCommand.id, (item) => ({
-        ...item,
-        status: "cancelled",
-        message: "Superseded by a new text command",
-      }));
       setCurrentCommand(null);
     }
 
@@ -204,6 +241,10 @@ export default function Index() {
             ? payload.confidenceScore
             : undefined;
       const commandId = `text-${Date.now()}`;
+      const requiresImmediateExecution = intent === "fetch_email";
+      const commandStatus: ActiveCommandStatus = requiresImmediateExecution
+        ? "acting"
+        : "needs_confirm";
 
       const nextCommand: ActiveCommand = {
         id: commandId,
@@ -211,9 +252,12 @@ export default function Index() {
         intent,
         entities,
         confidence,
-        status: "needs_confirm",
+        status: commandStatus,
         source: "text",
         nluPayload: payload,
+        metaMessage: requiresImmediateExecution
+          ? "Fetching emails..."
+          : undefined,
         timestamp: Date.now(),
       };
 
@@ -222,27 +266,26 @@ export default function Index() {
       setNluResult(payload);
       setInputText(""); // Clear the input field
 
-      addHistoryEntry({
-        id: commandId,
-        transcript: trimmed,
-        intent,
-        status: "needs_confirm",
-        timestamp: Date.now(),
-        source: "text",
-        entities,
-        confidence,
-      });
+      if (requiresImmediateExecution) {
+        skipFinally = true;
+        await executeImmediateCommand(commandId, payload);
+        return;
+      }
     } catch (error: any) {
       console.error("Text command error:", error);
       setErrorMessage(error.message);
       Alert.alert("Error", error.message);
     } finally {
-      setIsLoading(false);
+      if (!skipFinally) {
+        setIsLoading(false);
+      }
     }
   }
 
   // PHASE 1: UNDERSTAND (for voice)
   async function uploadRecording(uri: string) {
+    Speech.stop();
+    spokenCommandIdRef.current = null;
     setIsLoading(true);
     setTranscript("");
     setNluResult(null);
@@ -268,9 +311,6 @@ export default function Index() {
       const result = JSON.parse(response.body);
       console.log("Parsed result:", result);
 
-      // Store the full response for potential execution result
-      setLastUploadResponse(result);
-
       const payload = result.nluResult ?? result.nlu ?? result;
       const resolvedTranscript =
         result.transcript ||
@@ -287,6 +327,15 @@ export default function Index() {
             ? payload.confidenceScore
             : undefined;
       const commandId = `voice-${Date.now()}`;
+      const executionResult = result.executionResult ?? null;
+      const emails = executionResult?.emails as EmailSummary[] | undefined;
+      const isFetchEmails = resolvedIntent === "fetch_email";
+      const speechSummary = isFetchEmails
+        ? executionResult?.speechSummary ?? executionResult?.message ?? undefined
+        : undefined;
+      const commandStatus: ActiveCommandStatus = isFetchEmails
+        ? "sent"
+        : "needs_confirm";
 
       const nextCommand: ActiveCommand = {
         id: commandId,
@@ -294,28 +343,19 @@ export default function Index() {
         intent: resolvedIntent,
         entities: resolvedEntities,
         confidence: resolvedConfidence,
-        status: "needs_confirm",
+        status: commandStatus,
         source: "voice",
         nluPayload: payload,
-        metaMessage: result.executionResult?.message,
+        metaMessage: executionResult?.message,
+        emails,
+        speechSummary,
         timestamp: Date.now(),
       };
 
       setCurrentCommand(nextCommand);
       setTranscript(resolvedTranscript);
       setNluResult(payload);
-
-      addHistoryEntry({
-        id: commandId,
-        transcript: resolvedTranscript,
-        intent: resolvedIntent,
-        status: "needs_confirm",
-        timestamp: Date.now(),
-        source: "voice",
-        entities: resolvedEntities,
-        confidence: resolvedConfidence,
-        message: result.executionResult?.message,
-      });
+      setLastUploadResponse(isFetchEmails ? null : result);
     } catch (error: any) {
       console.error("Upload error:", error);
       setErrorMessage(error.message ?? "Failed to upload audio.");
@@ -346,32 +386,36 @@ export default function Index() {
     setCurrentCommand((prev) =>
       prev ? { ...prev, status: "acting" as ActiveCommandStatus } : prev
     );
-    updateHistoryEntry(currentCommand.id, (item) => ({
-      ...item,
-      status: "acting",
-      message: "Executing…",
-    }));
 
     try {
       if (lastUploadResponse && lastUploadResponse.executionResult) {
         const executionResult = lastUploadResponse.executionResult;
         const message =
           executionResult.message || "Command executed successfully";
+        const isFetchIntent = currentCommand?.intent === "fetch_email";
+        const isSendIntent = currentCommand?.intent === "send_email";
+        const emails = isFetchIntent
+          ? (executionResult?.emails as EmailSummary[] | undefined)
+          : undefined;
+        const speechSummary = isFetchIntent
+          ? executionResult?.speechSummary ?? executionResult?.message ?? message
+          : undefined;
+
         setCurrentCommand((prev) =>
           prev
             ? {
                 ...prev,
                 status: "sent",
                 metaMessage: message,
+                emails,
+                speechSummary,
               }
             : prev
         );
-        updateHistoryEntry(currentCommand.id, (item) => ({
-          ...item,
-          status: "sent",
-          message,
-        }));
-        Alert.alert("Success", message);
+        setLastUploadResponse(null);
+        if (isSendIntent) {
+          Alert.alert("Success", message);
+        }
       } else {
         // Send to command endpoint for execution
         const response = await fetch(
@@ -391,22 +435,33 @@ export default function Index() {
           throw new Error(result.message || "Failed to execute command");
 
         const message = result.message || "Command executed successfully";
+        const isSendIntent = payload?.intent === "send_email";
+        const isFetchIntent = payload?.intent === "fetch_email";
+        const emails = isFetchIntent
+          ? (result.emails ?? result.executionResult?.emails) as
+              | EmailSummary[]
+              | undefined
+          : undefined;
+        const speechSummary = isFetchIntent
+          ? result.speechSummary ?? result.executionResult?.speechSummary ?? message
+          : undefined;
+
         setCurrentCommand((prev) =>
           prev
             ? {
                 ...prev,
                 status: "sent",
                 metaMessage: message,
+                emails,
+                speechSummary,
               }
             : prev
         );
-        updateHistoryEntry(currentCommand.id, (item) => ({
-          ...item,
-          status: "sent",
-          message,
-        }));
 
-        Alert.alert("Success", message);
+        setLastUploadResponse(null);
+        if (isSendIntent) {
+          Alert.alert("Success", message);
+        }
       }
     } catch (error: any) {
       console.error("Command execution error:", error);
@@ -421,11 +476,6 @@ export default function Index() {
             }
           : prev
       );
-      updateHistoryEntry(currentCommand.id, (item) => ({
-        ...item,
-        status: "error",
-        message: error.message,
-      }));
     } finally {
       setIsLoading(false);
       setNluResult(null);
@@ -433,14 +483,86 @@ export default function Index() {
     }
   }
 
+  async function executeImmediateCommand(
+    commandId: string,
+    payload: any
+  ) {
+    try {
+      const token = await getToken();
+      if (!token) {
+        Alert.alert("Error", "You must be signed in.");
+        setIsLoading(false);
+        return;
+      }
+
+      const response = await fetch(
+        `${process.env.EXPO_PUBLIC_API_BASE_URL}/command`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.message || "Failed to execute command");
+      }
+
+      const message = result.message || "Command executed successfully";
+      const isSendIntent = payload?.intent === "send_email";
+      const isFetchIntent = payload?.intent === "fetch_email";
+      const emails =
+        (result.emails ?? result.executionResult?.emails) as
+          | EmailSummary[]
+          | undefined;
+      const speechSummary = isFetchIntent
+        ? result.speechSummary ?? result.executionResult?.speechSummary ?? message
+        : undefined;
+
+      setCurrentCommand((prev) =>
+        prev && prev.id === commandId
+          ? {
+              ...prev,
+              status: "sent",
+              metaMessage: message,
+              emails,
+              speechSummary,
+            }
+          : prev
+      );
+      setLastUploadResponse(null);
+      setErrorMessage(null);
+      if (isSendIntent) {
+        Alert.alert("Success", message);
+      }
+    } catch (error: any) {
+      const message = error?.message || "Failed to execute command.";
+      console.error("Immediate command error:", error);
+      setErrorMessage(message);
+      Alert.alert("Error", message);
+      setCurrentCommand((prev) =>
+        prev && prev.id === commandId
+          ? {
+              ...prev,
+              status: "error",
+              metaMessage: message,
+            }
+          : prev
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   // Handlers for the other confirmation buttons
   function handleCancelCommand() {
+    Speech.stop();
+    spokenCommandIdRef.current = null;
     if (currentCommand) {
-      updateHistoryEntry(currentCommand.id, (item) => ({
-        ...item,
-        status: "cancelled",
-        message: "Command cancelled",
-      }));
       setCurrentCommand(null);
     }
     setNluResult(null);
@@ -449,13 +571,10 @@ export default function Index() {
   }
 
   function handleTryAgain() {
+    Speech.stop();
+    spokenCommandIdRef.current = null;
     if (currentCommand) {
       setInputText(currentCommand.transcript);
-      updateHistoryEntry(currentCommand.id, (item) => ({
-        ...item,
-        status: "pending",
-        message: "Editing before resubmitting",
-      }));
       setCurrentCommand(null);
     }
     setNluResult(null);
@@ -464,6 +583,8 @@ export default function Index() {
   }
 
   async function startRecording() {
+    Speech.stop();
+    spokenCommandIdRef.current = null;
     if (!perm?.granted) {
       const res = await requestPerm();
       if (!res.granted) {
@@ -472,19 +593,18 @@ export default function Index() {
     }
 
     if (currentCommand && currentCommand.status === "needs_confirm") {
-      updateHistoryEntry(currentCommand.id, (item) => ({
-        ...item,
-        status: "cancelled",
-        message: "Superseded by a new recording",
-      }));
       setCurrentCommand(null);
       setNluResult(null);
       setTranscript("");
     }
 
+    // RECORDING MODE: Set up for microphone capture
+    // iOS: Uses PlayAndRecord category (may route to earpiece during recording)
+    // Android: Ensures recording is enabled
     await Audio.setAudioModeAsync({
       allowsRecordingIOS: true,
       playsInSilentModeIOS: true,
+      playThroughEarpieceAndroid: false, // Android: Don't route to earpiece even while recording
     });
 
     const newRecording = new Audio.Recording();
@@ -523,15 +643,7 @@ export default function Index() {
           >
             <View className="px-6 space-y-10">
               <View className="space-y-3">
-                <View className="self-start px-3 py-1 rounded-full bg-gray-200">
-                  <Text className="text-xs font-semibold text-gray-700">
-                    {voiceDisplay.label}
-                  </Text>
-                </View>
-                <Text className="text-3xl font-semibold text-gray-900">
-                  Hi {user?.emailAddresses[0]?.emailAddress ?? "there"}
-                </Text>
-                <Text className="text-sm text-gray-500">
+                <Text className="text-lg font-semibold text-gray-900 text-center mb-4">
                   {voiceDisplay.description}
                 </Text>
                 {activeTranscript ? (
@@ -567,6 +679,7 @@ export default function Index() {
                   source={currentCommand.source}
                   metaMessage={currentCommand.metaMessage}
                   timestamp={currentCommand.timestamp}
+                  emails={currentCommand.emails}
                   footer={
                     currentCommand.status === "sent" ? (
                       <View className="flex-row gap-3">
@@ -587,7 +700,7 @@ export default function Index() {
                           </Text>
                         </TouchableOpacity>
                       </View>
-                    ) : (
+                    ) : currentCommand.intent === "send_email" ? (
                       <View className="flex-row gap-3">
                         <TouchableOpacity
                           onPress={handleConfirmCommand}
@@ -619,7 +732,14 @@ export default function Index() {
                           </Text>
                         </TouchableOpacity>
                       </View>
-                    )
+                    ) : currentCommand.status === "acting" ? (
+                      <View className="flex-row items-center justify-center gap-2 py-3">
+                        <ActivityIndicator size="small" color="#7c3aed" />
+                        <Text className="text-sm font-semibold text-purple-600">
+                          Fetching emails…
+                        </Text>
+                      </View>
+                    ) : null
                   }
                 />
               ) : (

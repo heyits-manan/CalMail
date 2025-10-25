@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { ReactNode } from "react";
 import { View, Text } from "react-native";
-import { CommandHistoryStatus } from "../_types";
+import { CommandHistoryStatus, EmailSummary } from "../_types";
 
 type CommandCardStatus =
   | CommandHistoryStatus
@@ -20,6 +20,7 @@ interface CommandCardProps {
   metaMessage?: string;
   footer?: ReactNode;
   children?: ReactNode;
+  emails?: EmailSummary[];
 }
 
 const STATUS_META: Record<
@@ -87,6 +88,7 @@ export function CommandCard({
   metaMessage,
   footer,
   children,
+  emails,
 }: CommandCardProps) {
   const meta = STATUS_META[status];
   const entryDate = timestamp ? new Date(timestamp) : undefined;
@@ -153,6 +155,45 @@ export function CommandCard({
       <Text className="mt-4 text-base text-gray-900 leading-6">{transcript}</Text>
 
       {renderEntities()}
+
+      {emails && emails.length ? (
+        <View className="mt-4 space-y-3">
+          {emails.map((email, index) => {
+            const receivedDate = new Date(email.date);
+            const hasValidDate = !Number.isNaN(receivedDate.getTime());
+            const dateLabel = hasValidDate
+              ? receivedDate.toLocaleString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : "Unknown date";
+
+            return (
+              <View
+                key={email.id || `${index}`}
+                className="p-4 rounded-2xl border border-gray-200 bg-gray-50"
+              >
+                <View className="flex-row items-start justify-between">
+                  <Text className="text-sm font-semibold text-gray-900 flex-1 pr-3">
+                    {email.subject || "(No subject)"}
+                  </Text>
+                  <Text className="text-xs text-gray-500">{dateLabel}</Text>
+                </View>
+                <Text className="text-xs text-gray-500 mt-1">
+                  From: <Text className="font-medium text-gray-600">{email.from}</Text>
+                </Text>
+                {email.snippet ? (
+                  <Text className="text-sm text-gray-700 mt-2 leading-5">
+                    {email.snippet}
+                  </Text>
+                ) : null}
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
 
       {children}
 

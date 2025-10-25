@@ -47,6 +47,15 @@ export function CommandComposer({
   listening,
 }: CommandComposerProps) {
   const [showDetails, setShowDetails] = useState(false);
+  const isFetchIntent = nluResult?.intent === "fetch_email";
+  const summaryTitle = isFetchIntent ? "Inbox request preview" : "Ready to send this?";
+  const primaryActionLabel = isFetchIntent
+    ? isLoading
+      ? "Fetching"
+      : "Fetch"
+    : isLoading
+      ? "Sending"
+      : "Send";
 
   const handleToggleDetails = () => {
     LayoutAnimation.easeInEaseOut();
@@ -171,7 +180,7 @@ export function CommandComposer({
         <View className="bg-white border border-purple-200 rounded-2xl p-4 shadow-sm">
           <View className="flex-row items-center justify-between">
             <Text className="text-sm font-semibold text-purple-700">
-              Ready to send this?
+              {summaryTitle}
             </Text>
             <View className="px-2 py-1 rounded-full bg-purple-100">
               <Text className="text-xs font-bold text-purple-600">
@@ -227,7 +236,7 @@ export function CommandComposer({
             >
               <Ionicons name="send" size={18} color="white" />
               <Text className="text-white font-semibold text-base">
-                {isLoading ? "Sending" : "Send"}
+                {primaryActionLabel}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity

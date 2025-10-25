@@ -14,6 +14,14 @@ export type CommandHistoryStatus =
   | "cancelled"
   | "error";
 
+export interface EmailSummary {
+  id: string;
+  subject: string;
+  from: string;
+  snippet: string;
+  date: string;
+}
+
 export interface CommandHistoryItem {
   id: string;
   transcript: string;
@@ -24,4 +32,6 @@ export interface CommandHistoryItem {
   source?: "voice" | "text";
   confidence?: number;
   entities?: Record<string, unknown>;
+  emails?: EmailSummary[];
+  speechSummary?: string;
 }

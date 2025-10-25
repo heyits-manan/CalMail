@@ -31,6 +31,7 @@ export function CommandHistory({ items }: CommandHistoryProps) {
             source={item.source}
             confidence={item.confidence}
             entities={item.entities}
+            emails={item.emails}
           />
         ))}
       </View>
