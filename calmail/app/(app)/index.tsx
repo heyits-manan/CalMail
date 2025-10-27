@@ -21,7 +21,7 @@ import {
 } from "expo-file-system/legacy";
 import { CommandCard } from "./_components/CommandCard";
 import { RecordButton } from "./_components/RecordButton";
-import { CommandHistoryItem, EmailSummary, VoiceState } from "./_types";
+import { EmailSummary, VoiceState } from "./_types";
 
 type ActiveCommandStatus =
   | "pending"
@@ -176,7 +176,7 @@ export default function Index() {
         });
 
         Speech.stop();
-        Speech.speak(currentCommand.speechSummary, { rate: 0.95 });
+        Speech.speak(currentCommand.speechSummary as any, { rate: 0.95 });
         spokenCommandIdRef.current = currentCommand.id;
       } catch (err) {
         console.warn("Speech playback failed", err);
@@ -331,7 +331,9 @@ export default function Index() {
       const emails = executionResult?.emails as EmailSummary[] | undefined;
       const isFetchEmails = resolvedIntent === "fetch_email";
       const speechSummary = isFetchEmails
-        ? executionResult?.speechSummary ?? executionResult?.message ?? undefined
+        ? (executionResult?.speechSummary ??
+          executionResult?.message ??
+          undefined)
         : undefined;
       const commandStatus: ActiveCommandStatus = isFetchEmails
         ? "sent"
@@ -398,7 +400,9 @@ export default function Index() {
           ? (executionResult?.emails as EmailSummary[] | undefined)
           : undefined;
         const speechSummary = isFetchIntent
-          ? executionResult?.speechSummary ?? executionResult?.message ?? message
+          ? (executionResult?.speechSummary ??
+            executionResult?.message ??
+            message)
           : undefined;
 
         setCurrentCommand((prev) =>
@@ -438,12 +442,14 @@ export default function Index() {
         const isSendIntent = payload?.intent === "send_email";
         const isFetchIntent = payload?.intent === "fetch_email";
         const emails = isFetchIntent
-          ? (result.emails ?? result.executionResult?.emails) as
+          ? ((result.emails ?? result.executionResult?.emails) as
               | EmailSummary[]
-              | undefined
+              | undefined)
           : undefined;
         const speechSummary = isFetchIntent
-          ? result.speechSummary ?? result.executionResult?.speechSummary ?? message
+          ? (result.speechSummary ??
+            result.executionResult?.speechSummary ??
+            message)
           : undefined;
 
         setCurrentCommand((prev) =>
@@ -483,10 +489,7 @@ export default function Index() {
     }
   }
 
-  async function executeImmediateCommand(
-    commandId: string,
-    payload: any
-  ) {
+  async function executeImmediateCommand(commandId: string, payload: any) {
     try {
       const token = await getToken();
       if (!token) {
@@ -515,12 +518,13 @@ export default function Index() {
       const message = result.message || "Command executed successfully";
       const isSendIntent = payload?.intent === "send_email";
       const isFetchIntent = payload?.intent === "fetch_email";
-      const emails =
-        (result.emails ?? result.executionResult?.emails) as
-          | EmailSummary[]
-          | undefined;
+      const emails = (result.emails ?? result.executionResult?.emails) as
+        | EmailSummary[]
+        | undefined;
       const speechSummary = isFetchIntent
-        ? result.speechSummary ?? result.executionResult?.speechSummary ?? message
+        ? (result.speechSummary ??
+          result.executionResult?.speechSummary ??
+          message)
         : undefined;
 
       setCurrentCommand((prev) =>
